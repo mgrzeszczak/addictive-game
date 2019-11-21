@@ -12,11 +12,11 @@ import kotlin.random.Random
 
 val folder = "level6"
 val files = listOf(
-    "level6-1.in"
-//    "level6-2.in",
-//    "level6-3.in",
-//    "level6-4.in",
-//    "level6-5.in"
+    "level6-1.in",
+    "level6-2.in",
+    "level6-3.in",
+    "level6-4.in",
+    "level6-5.in"
 )
 
 data class Input(
@@ -35,6 +35,20 @@ data class Test(
     val points: List<Point>,
     val paths: List<Path>
 ) {
+    val colors by lazy {
+        points.map { it.color }.distinct().sorted()
+    }
+
+    val pairedPoints by lazy {
+        val groupedByColor = points.groupBy { it.color }
+        val result = mutableMapOf<Point, Point>()
+        groupedByColor.forEach { (_, b) ->
+            result[b[0]] = b[1]
+            result[b[1]] = b[0]
+        }
+        result.toMap()
+    }
+
     companion object {
         fun read(scanner: Scanner): Test {
             val board = Board.read(scanner)
@@ -54,12 +68,13 @@ fun readInput(file: String): Input {
 }
 
 data class PartialPath(
-    val startingPoint: Point,
-    val dirs: MutableList<Dir>,
+    var startingPoint: Point,
+    var dirs: MutableList<Dir>,
+    var targetPoint: Point,
+    var visited: MutableList<Coords> = mutableListOf(),
     var current: Coords,
-    val targetPoint: Point,
-    val visited: MutableList<Coords> = mutableListOf(),
-    var done: Boolean = false
+    var complete: Boolean = false,
+    var removed: Boolean = false
 ) {
     fun encode(): List<String> {
         val result = mutableListOf<String>()
@@ -96,117 +111,125 @@ fun drawTest(test: Test, solution: TestSolution): BufferedImage {
         .associateWith { randColor() }
     val image = BufferedImage(board.cols, board.rows, BufferedImage.TYPE_INT_RGB)
     test.points.forEach {
-        image.setRGB(it.coords.col-1, it.coords.row-1, colors[it.color]!!.rgb)
+        image.setRGB(it.coords.col - 1, it.coords.row - 1, colors[it.color]!!.rgb)
     }
     solution.paths.forEach {
         var current = it.startingPoint.coords
         val color = colors[it.startingPoint.color]!!
         for (d in it.dirs) {
             current = current.move(d)
-            image.setRGB(current.col-1, current.row-1, color.rgb)
+            image.setRGB(current.col - 1, current.row - 1, color.rgb)
         }
     }
     return image
 }
 
+
+fun solve(test: Test, visualize: Boolean = false): TestSolution {
+    val colors = test.colors
+    val pairedPoints = test.pairedPoints
+    val board = test.board
+    val points = test.points
+
+    val blockedByPoints = test.points.map { it.position }.toMutableSet()
+    val blockedByPaths = mutableSetOf<Int>()
+
+    val openPaths = test.points.map {
+        PartialPath(it, mutableListOf(), pairedPoints[it]!!, mutableListOf(it.coords), it.coords, false)
+    }
+
+    val pathsByStartingPoint = openPaths.associateBy { it.startingPoint }
+    val pairedPaths = pairedPoints.entries.associate {
+        it.key to pathsByStartingPoint[it.value]!!
+    }
+
+    var change = true
+    while (change) {
+        change = false
+        for (p in openPaths) {
+            if (p.complete || p.removed) {
+                continue
+            }
+            val pairedPath = pairedPaths[p.startingPoint]!!
+            val neighbors = p.current.neighbors(board).filter { n ->
+                val nPos = n.position(board)
+                (!blockedByPoints.contains(nPos) && !blockedByPaths.contains(nPos))
+                        || p.targetPoint.position == nPos
+                        || pairedPath.current.position(board) == nPos
+            }
+            if (neighbors.size != 1) {
+                continue
+            }
+            val n = neighbors[0]
+            val nPos = n.position(board)
+
+            if (p.targetPoint.position == nPos) {
+                // reached target point
+                pairedPath.removed = true
+                blockedByPaths.removeAll(pairedPath.visited.map { it.position(board) })
+                p.complete = true
+
+                p.dirs.add(getDir(p.current, n, board))
+                p.visited.add(n)
+                p.current = n
+                blockedByPaths.add(nPos)
+
+                if (p.startingPoint.position > pairedPath.startingPoint.position) {
+                    // gotta inverse the path
+                    p.startingPoint = pairedPath.startingPoint
+                    p.targetPoint = pairedPath.targetPoint
+                    p.dirs = p.dirs.reversed().map { it.reverse() }.toMutableList()
+                }
+
+            } else if (pairedPath.current.position(board) == nPos) {
+                // merge with other path
+                p.dirs.add(getDir(p.current, n, board))
+                var a = p
+                var b = pairedPath
+                if (a.startingPoint.position > b.startingPoint.position) {
+                    val c = a
+                    a = b
+                    b = c
+                }
+                a.complete = true
+                b.removed = true
+                a.current = a.targetPoint.coords
+                a.dirs.addAll(b.dirs.reversed().map { it.reverse() })
+                a.visited.addAll(b.visited.reversed())
+            } else {
+                // found sure move
+                p.dirs.add(getDir(p.current, n, board))
+                p.visited.add(n)
+                p.current = n
+                blockedByPaths.add(nPos)
+            }
+
+            change = true
+        }
+    }
+
+    val paths = openPaths.filter { !it.removed && it.dirs.isNotEmpty() }
+    val sortedGrouped = paths.groupBy { it.startingPoint.color }
+        .mapValues {
+            it.value.sortedBy { it.startingPoint.position }
+        }
+    return TestSolution(sortedGrouped.keys.sorted().flatMap { sortedGrouped[it]!! })
+}
+
 fun main() {
-    files.forEach {
-        val input = readInput("$folder/$it")
-        val testResults = input.tests.map { test ->
-            val points = test.points
-            val board = test.board
+    files.forEach {file->
+        val input = readInput("$folder/$file")
 
-            val colors = points.map { it.color }.distinct().sorted()
+        val testSolutions = input.tests.map { solve(it) }
 
-            val blocked = mutableSetOf<Int>()
-            points.forEach { blocked.add(it.position) }
-            val pointsByColor = points.groupBy { it.color }
-
-            val targetPoints = points.associateWith {
-                val sameColoredPoints = pointsByColor[it.color]!!
-                if (sameColoredPoints[0].position == it.position) {
-                    sameColoredPoints[1]
-                } else {
-                    sameColoredPoints[0]
-                }
-            }
-
-            val open = points.map { PartialPath(it, mutableListOf(), it.coords, targetPoints[it]!!) }.toMutableList()
-
-            val partialPathsByColor = open.groupBy { it.startingPoint.color }
-                .mapValues {
-                    val a = it.value[0]
-                    val b = it.value[1]
-                    mapOf(a.startingPoint to b, b.startingPoint to a)
-                }
-
-            var change = true
-            while (change) {
-                change = false
-                for (p in open.toList()) {
-                    if (p !in open) continue
-                    val current = p.current
-                    val currentPosition = current.position(board)
-                    val neighbors = current.neighbors(board).filter {
-                        !blocked.contains(it.position(board))
-                                || p.targetPoint.position == it.position(board)
-                                || partialPathsByColor[p.startingPoint.color]!![p.startingPoint]!!.current.position(board) == it.position(board)
-                    }
-                    if (neighbors.size == 1) {
-                        val n = neighbors[0]
-                        if (p.targetPoint.position == n.position(board)) {
-                            p.done = true
-                            val otherPath = partialPathsByColor[p.startingPoint.color]!![p.startingPoint]!!
-                            open.remove(otherPath)
-                            blocked.removeAll(otherPath.visited.map { it.position(board) })
-                            blocked.add(n.position(board))
-                            p.current = n
-                            p.visited.add(n)
-                            p.dirs.add(getDir(current, n, board))
-                        } else if (partialPathsByColor[p.startingPoint.color]!![p.startingPoint]!!.current.position(board) == n.position(board)) {
-                            // merge paths
-                            var a = p
-                            var b = partialPathsByColor[p.startingPoint.color]!![p.startingPoint]!!
-                            if (a.startingPoint.position > b.startingPoint.position) {
-                                val c = a
-                                a = b
-                                b = c
-                            }
-                            open.remove(b)
-                            a.dirs.addAll(b.dirs.reversed().map { it.reverse() })
-                        } else {
-                            blocked.add(n.position(board))
-                            p.current = n
-                            p.visited.add(n)
-                            p.dirs.add(getDir(current, n, board))
-                        }
-                        change = true
-                    }
-                }
-            }
-
-            val pathsByColor = open.filter { !it.dirs.isEmpty() }
-                .groupBy { it.startingPoint.color }
-                .entries
-                .associateBy({ it.key }, { it.value.sortedBy { it.startingPoint.position } })
-            val testResult = mutableListOf<PartialPath>()
-            pathsByColor.keys
-                .sorted()
-                .forEach { testResult.addAll(pathsByColor[it]!!) }
-            TestSolution(testResult)
+        input.tests.zip(testSolutions).forEachIndexed { ind, p ->
+            ImageIO.write(drawTest(p.first, TestSolution(listOf())), "PNG", File("${file}_test_${ind}_start.png"))
+            ImageIO.write(drawTest(p.first, p.second), "PNG", File("${file}_test_${ind}_end.png"))
         }
 
-//        input.tests.zip(testResults).forEachIndexed { ind, p ->
-//            ImageIO.write(drawTest(p.first, TestSolution(listOf())), "PNG", File("test_${ind}_start.png"))
-//            ImageIO.write(drawTest(p.first, p.second), "PNG", File("test_${ind}_end.png"))
-//        }
-
-
-
-
-        val result = testResults.flatMap { it.encode() }
+        val result = testSolutions.flatMap { it.encode() }
             .joinToString(separator = " ") { it }
-        println(testResults.size.toString() + " " + result)
+        println(testSolutions.size.toString() + " " + result)
     }
 }
 

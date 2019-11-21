@@ -9,11 +9,11 @@ import javax.imageio.ImageIO
 
 val folder = "level4"
 val files = listOf(
-//    "level4-0.in"
-//    "level4-1.in",
-//    "level4-2.in",
-//    "level4-3.in",
-//    "level4-4.in",
+    "level4-0.in",
+    "level4-1.in",
+    "level4-2.in",
+    "level4-3.in",
+    "level4-4.in",
     "level4-5.in"
 )
 
